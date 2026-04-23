@@ -220,10 +220,58 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
     func: async () => {
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+      const extractAfterColon = value => {
+        const text = ((value || '') + '').trim()
+        const idx = text.indexOf(':')
+        return idx >= 0 ? text.slice(idx + 1).trim() : text
+      }
+
       const readText = selector => {
         const el = document.querySelector(selector)
         const text = (el?.innerText || '').trim()
         return text
+      }
+
+      const readMeta = selector => {
+        const el = document.querySelector(selector)
+        const content = (el?.getAttribute?.('content') || '').trim()
+        return content
+      }
+
+      const readTextAny = selectors => {
+        for (const selector of selectors) {
+          const t = readText(selector)
+          if (t) return t
+        }
+        return ''
+      }
+
+      const findSpecValue = labelMatchers => {
+        const nodes = Array.from(document.querySelectorAll('dl, tr, li, div'))
+        for (const node of nodes) {
+          const text = ((node?.textContent || node?.innerText || '') + '').trim()
+          if (!text) continue
+          if (!labelMatchers.some(m => (typeof m === 'string' ? text.includes(m) : m.test(text)))) continue
+
+          const dd = node.querySelector?.('dd')
+          if (dd) {
+            const v = ((dd.textContent || dd.innerText || '') + '').trim()
+            if (v) return v
+          }
+
+          const td = node.querySelector?.('td:last-child')
+          if (td) {
+            const v = ((td.textContent || td.innerText || '') + '').trim()
+            if (v) return v
+          }
+
+          const next = node.nextElementSibling
+          if (next) {
+            const v = ((next.textContent || next.innerText || '') + '').trim()
+            if (v) return v
+          }
+        }
+        return ''
       }
 
       for (let i = 0; i < 30; i++) {
@@ -250,16 +298,87 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         const root = roots[1]
         if (!root) return ''
         const text = ((root.textContent || root.innerText || '') + '').trim()
-        const idx = text.indexOf(':')
-        return idx >= 0 ? text.slice(idx + 1).trim() : text
+        return extractAfterColon(text)
       })()
       const handlingTime = (() => {
         const roots = Array.from(document.querySelectorAll('.dynamic-shipping-contentLayout'))
         const root = roots[0]
         if (!root) return ''
         const text = ((root.textContent || root.innerText || '') + '').trim()
-        const idx = text.indexOf(':')
-        return idx >= 0 ? text.slice(idx + 1).trim() : text
+        return extractAfterColon(text)
+      })()
+
+      const category = (() => {
+        const meta = readMeta('meta[property="og:category"]')
+        if (meta) return meta
+        const crumbs = Array.from(
+          document.querySelectorAll('a[href*="/category/"], a[href*="category/"], nav a, ol li a')
+        )
+          .map(a => ((a?.textContent || a?.innerText || '') + '').trim())
+          .filter(Boolean)
+        const unique = Array.from(new Set(crumbs)).slice(0, 6)
+        return unique.length ? unique.join(' > ') : ''
+      })()
+
+      const brand = (() => {
+        const v = findSpecValue([/brand/i, /ブランド/])
+        return v
+      })()
+
+      const categoryCondition = (() => {
+        const v = findSpecValue([/condition/i, /状態/, /コンディション/])
+        return v || 'New'
+      })()
+
+      const customLabelSku = (() => {
+        const url = location.href || ''
+        const m = url.match(/\/item\/(\d+)\.html/i) || url.match(/item\/(\d+)\.html/i)
+        return m?.[1] ? String(m[1]) : ''
+      })()
+
+      const priceFormat = (() => {
+        const priceText = readText('.price-kr--current--NhhwBO1')
+        if (priceText.includes('-') || priceText.includes('–')) return 'Range'
+        return 'Fixed'
+      })()
+
+      const description = readTextAny([
+        '#product-description',
+        '[data-pl="product-description"]',
+        '.product-description',
+        '[id*="description"]',
+      ]) || readMeta('meta[name="description"]')
+
+      const itemLocation = await (async () => {
+        const trigger = document.querySelector('div.store-detail--storeNameWrap--Z45gRHH')
+        if (!trigger) return ''
+
+        const beforeTables = new Set(Array.from(document.querySelectorAll('table')))
+        try {
+          const rect = trigger.getBoundingClientRect()
+          const x = rect.left + Math.min(10, Math.max(1, rect.width / 2))
+          const y = rect.top + Math.min(10, Math.max(1, rect.height / 2))
+          trigger.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+          trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+          trigger.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: x, clientY: y }))
+        } catch {}
+
+        await sleep(600)
+
+        const allTables = Array.from(document.querySelectorAll('table'))
+        const candidateTables = allTables.filter(t => !beforeTables.has(t))
+        const tablesToCheck = candidateTables.length ? candidateTables : allTables
+
+        for (const table of tablesToCheck) {
+          const rows = Array.from(table.querySelectorAll('tr'))
+          if (rows.length < 3) continue
+          const cells = Array.from(rows[2].querySelectorAll('td, th'))
+          if (cells.length < 2) continue
+          const value = ((cells[1].textContent || cells[1].innerText || '') + '').trim()
+          if (value) return value
+        }
+
+        return ''
       })()
 
       return {
@@ -272,6 +391,13 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
           shippingService,
           shippingCost,
           handlingTime,
+          'Item location': itemLocation,
+          Category: category,
+          'Category Condition': categoryCondition,
+          Brand: brand,
+          'Custom Label (SKU)': customLabelSku,
+          'Price Format': priceFormat,
+          Description: description,
         },
       }
     },
