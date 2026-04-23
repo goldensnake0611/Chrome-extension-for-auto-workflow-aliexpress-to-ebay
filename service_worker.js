@@ -623,10 +623,30 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         return 'Fixed'
       })()
 
-      const description = (() => {
-        const el = document.querySelector('div.detail-desc-decorate-richtext')
-        const html = (el?.innerHTML || '').trim()
-        return html || ''
+      const description = await (async () => {
+        const cleanLine = value =>
+          ((value || '') + '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+
+        const extractFromRoots = () => {
+          const roots = Array.from(document.querySelectorAll('div.detail-desc-decorate-richtext'))
+          let bestLines = []
+          for (const root of roots) {
+            const ps = Array.from(root.querySelectorAll('p'))
+            const lines = ps.map(p => cleanLine(p?.textContent || p?.innerText || '')).filter(Boolean)
+            if (lines.length > bestLines.length) bestLines = lines
+          }
+          return bestLines.join('\n')
+        }
+
+        for (let i = 0; i < 40; i++) {
+          const text = extractFromRoots()
+          if (text) return text
+          await sleep(250)
+        }
+        return ''
       })()
 
       const itemLocation = await (async () => {
@@ -759,6 +779,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         const details = []
         const downloadIdsForCleanup = []
+        if (total === 0) {
+          try {
+            const { detail } = await scrapeProductDetailFromTab(
+              tabId,
+              tabUrl,
+              status,
+              abortController.signal
+            )
+            if (detail) {
+              const ids = await downloadImagesToFolder(
+                detail.images,
+                detail.title || detail['Custom Label (SKU)'] || 'item',
+                abortController.signal
+              )
+              if (Array.isArray(ids) && ids.length) downloadIdsForCleanup.push(...ids)
+              details.push(detail)
+            }
+          } catch {}
+        }
         for (let i = 0; i < total; i++) {
           if (abortController.signal.aborted) throw createAbortError()
           const href = hrefs[i]
