@@ -1,6 +1,8 @@
 const STORAGE_KEY = 'jobState'
 let currentJob = null
 const TARGET_URL = 'https://ja.aliexpress.com/item/1005010133856596.html?gatewayAdapt=usa2jpn4itemAdapt'
+const HREF_LIMIT = 2
+const keepAlivePorts = new Set()
 
 async function getState() {
   const { [STORAGE_KEY]: state } = await chrome.storage.local.get(STORAGE_KEY)
@@ -53,12 +55,15 @@ async function waitForTabComplete(tabId, signal, timeoutMs = 60000) {
     }
 
     let done = false
+    let intervalId = null
+    let timeoutId = null
 
     const cleanup = () => {
       if (done) return
       done = true
       chrome.tabs.onUpdated.removeListener(onUpdated)
       if (timeoutId) clearTimeout(timeoutId)
+      if (intervalId) clearInterval(intervalId)
       if (signal) signal.removeEventListener('abort', onAbort)
     }
 
@@ -74,13 +79,26 @@ async function waitForTabComplete(tabId, signal, timeoutMs = 60000) {
       resolve()
     }
 
-    const timeoutId = setTimeout(() => {
+    timeoutId = setTimeout(() => {
       cleanup()
       reject(new Error('Timed out waiting for tab load.'))
     }, timeoutMs)
 
     chrome.tabs.onUpdated.addListener(onUpdated)
     if (signal) signal.addEventListener('abort', onAbort, { once: true })
+
+    intervalId = setInterval(() => {
+      ;(async () => {
+        if (done) return
+        try {
+          const tab = await chrome.tabs.get(tabId)
+          if (tab?.status === 'complete') {
+            cleanup()
+            resolve()
+          }
+        } catch {}
+      })()
+    }, 500)
   })
 }
 
@@ -108,7 +126,7 @@ async function scrapeHrefsFromTab(tabId, fallbackUrl, status, signal) {
 
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: async () => {
+    func: async hrefLimit => {
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
       const autoScrollAndLoad = async () => {
@@ -138,13 +156,13 @@ async function scrapeHrefsFromTab(tabId, fallbackUrl, status, signal) {
             if (!abs.startsWith('http://') && !abs.startsWith('https://')) continue
 
             hrefSet.add(abs)
-            if (hrefSet.size >= 100) break
+            if (hrefSet.size >= hrefLimit) break
           }
         }
 
         collectHrefs()
 
-        while (hrefSet.size < 100) {
+        while (hrefSet.size < hrefLimit) {
           window.scrollTo(0, document.body.scrollHeight)
           await sleep(2000)
 
@@ -159,7 +177,7 @@ async function scrapeHrefsFromTab(tabId, fallbackUrl, status, signal) {
           }
 
           collectHrefs()
-          if (hrefSet.size >= 100) break
+          if (hrefSet.size >= hrefLimit) break
 
           const newHeight = document.body.scrollHeight
           if (newHeight === previousHeight) {
@@ -174,12 +192,13 @@ async function scrapeHrefsFromTab(tabId, fallbackUrl, status, signal) {
           if (loops >= 80) break
         }
 
-        return Array.from(hrefSet).slice(0, 100)
+        return Array.from(hrefSet).slice(0, hrefLimit)
       }
 
       const hrefs = await autoScrollAndLoad()
       return { finalUrl: location.href, hrefs }
     },
+    args: [HREF_LIMIT],
   })
 
   const first = Array.isArray(results) ? results[0] : null
@@ -190,9 +209,100 @@ async function scrapeHrefsFromTab(tabId, fallbackUrl, status, signal) {
   return { finalUrl, hrefs, aTags: [] }
 }
 
+async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
+  if (status !== 'complete') {
+    await waitForTabComplete(tabId, signal, 60000)
+  }
+  if (signal?.aborted) throw createAbortError()
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async () => {
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+      const readText = selector => {
+        const el = document.querySelector(selector)
+        const text = (el?.innerText || '').trim()
+        return text
+      }
+
+      for (let i = 0; i < 30; i++) {
+        const title = readText('h1')
+        const price = readText('.price-kr--current--NhhwBO1')
+        if (title || price) break
+        await sleep(500)
+      }
+
+      const images = Array.from(document.querySelectorAll('div.slider--wrap--dfLgmYD img'))
+        .map(img => (img?.currentSrc || img?.src || img?.getAttribute('src') || '').trim())
+        .filter(Boolean)
+
+      const quantityRaw = readText('.quantity--info--jnoo_pD')
+      const quantity =
+        quantityRaw === 'Limit one per customer.' || quantityRaw === 'お一人様1点限り' ? 1 : quantityRaw
+
+      const shippingCostRaw = readText('.dynamic-shipping-titleLayout')
+      const shippingCost =
+        shippingCostRaw === '送料無料' || shippingCostRaw === 'Free shipping' ? 0 : shippingCostRaw
+
+      const shippingService = (() => {
+        const roots = Array.from(document.querySelectorAll('.dynamic-shipping-contentLayout'))
+        const root = roots[1]
+        if (!root) return ''
+        const text = ((root.textContent || root.innerText || '') + '').trim()
+        const idx = text.indexOf(':')
+        return idx >= 0 ? text.slice(idx + 1).trim() : text
+      })()
+      const handlingTime = (() => {
+        const roots = Array.from(document.querySelectorAll('.dynamic-shipping-contentLayout'))
+        const root = roots[0]
+        if (!root) return ''
+        const text = ((root.textContent || root.innerText || '') + '').trim()
+        const idx = text.indexOf(':')
+        return idx >= 0 ? text.slice(idx + 1).trim() : text
+      })()
+
+      return {
+        finalUrl: location.href,
+        detail: {
+          title: readText('h1'),
+          price: readText('.price-kr--current--NhhwBO1'),
+          images: Array.from(new Set(images)),
+          quantity,
+          shippingService,
+          shippingCost,
+          handlingTime,
+        },
+      }
+    },
+  })
+
+  const first = Array.isArray(results) ? results[0] : null
+  const payload = first?.result ?? null
+
+  return {
+    finalUrl: typeof payload?.finalUrl === 'string' ? payload.finalUrl : fallbackUrl,
+    detail: payload?.detail && typeof payload.detail === 'object' ? payload.detail : null,
+  }
+}
+
+async function updateTabUrl(tabId, url, signal) {
+  if (signal?.aborted) throw createAbortError()
+  await chrome.tabs.update(tabId, { url })
+  await waitForTabComplete(tabId, signal, 60000)
+  if (signal?.aborted) throw createAbortError()
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   const state = await getState()
   await chrome.storage.local.set({ [STORAGE_KEY]: state })
+})
+
+chrome.runtime.onConnect.addListener(port => {
+  keepAlivePorts.add(port)
+  port.onDisconnect.addListener(() => {
+    keepAlivePorts.delete(port)
+  })
 })
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -227,20 +337,46 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         await setState({ progress: 25 })
         const { tabId, tabUrl, status } = await getActiveTab()
-        const { finalUrl, hrefs: hrefsRaw, aTags } = await scrapeHrefsFromTab(
+        const { finalUrl: listingFinalUrl, hrefs } = await scrapeHrefsFromTab(
           tabId,
           tabUrl,
           status,
           abortController.signal
         )
-        const hrefs = [...new Set(hrefsRaw)].filter(Boolean).slice(0, 100)
-        const aTagsList = Array.isArray(aTags) ? aTags : []
-        const total = aTagsList.length ? aTagsList.length : hrefs.length
+
+        const total = Array.isArray(hrefs) ? hrefs.length : 0
+        await setState({ total, scraped: 0 })
+
+        const details = []
+        for (let i = 0; i < total; i++) {
+          if (abortController.signal.aborted) throw createAbortError()
+          const href = hrefs[i]
+          if (typeof href !== 'string' || !href) continue
+
+          try {
+            await updateTabUrl(tabId, href, abortController.signal)
+            const { detail } = await scrapeProductDetailFromTab(
+              tabId,
+              href,
+              'complete',
+              abortController.signal
+            )
+            if (detail) details.push(detail)
+          } catch {}
+
+          const scraped = i + 1
+          const pct = total ? Math.floor((scraped / total) * 65) : 0
+          await setState({ scraped, progress: 25 + pct })
+        }
+
+        try {
+          await updateTabUrl(tabId, tabUrl, abortController.signal)
+        } catch {}
 
         await setState({ total, scraped: total, progress: 90 })
         await stopJob({
           progress: 100,
-          result: { listingUrl: targetUrl, hrefs, aTags: aTagsList, finalUrl },
+          result: { listingUrl: targetUrl, finalUrl: listingFinalUrl, details },
           error: null,
         })
       } catch (e) {
@@ -275,6 +411,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'GET_STATE') {
       const state = await getState()
       sendResponse({ ok: true, state })
+      return
+    }
+
+    if (message?.type === 'SCRAPE_DETAIL') {
+      try {
+        const { tabId, tabUrl, status } = await getActiveTab()
+        const { finalUrl, detail } = await scrapeProductDetailFromTab(tabId, tabUrl, status, null)
+        sendResponse({ ok: true, finalUrl, detail })
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Scrape failed.'
+        sendResponse({ ok: false, error: msg })
+      }
       return
     }
 

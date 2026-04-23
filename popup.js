@@ -17,6 +17,7 @@ const errorValueEl = $('errorValue')
 const listingValueEl = $('listingValue')
 const totalValueEl = $('totalValue')
 const outputValueEl = $('outputValue')
+let keepAlivePort = null
 
 function render(state) {
   const progress = Math.max(0, Math.min(100, Number(state?.progress ?? 0)))
@@ -40,17 +41,26 @@ function render(state) {
   startBtn.disabled = running
   stopBtn.disabled = !running
 
+  if (running) {
+    if (!keepAlivePort) {
+      try {
+        keepAlivePort = chrome.runtime.connect({ name: 'keepalive' })
+      } catch {}
+    }
+  } else if (keepAlivePort) {
+    try {
+      keepAlivePort.disconnect()
+    } catch {}
+    keepAlivePort = null
+  }
+
   errorValueEl.textContent = error
   listingValueEl.textContent = result?.listingUrl || '—'
   totalValueEl.textContent = Number.isFinite(total) ? String(total) : '0'
 
-  const hrefs = Array.isArray(result?.hrefs) ? result.hrefs : []
-  const aTags = Array.isArray(result?.aTags) ? result.aTags : []
-  if (aTags.length) {
-    outputValueEl.value = JSON.stringify(aTags, null, 2)
-  } else {
-    outputValueEl.value = hrefs.length ? JSON.stringify(hrefs, null, 2) : ''
-  }
+  const details = Array.isArray(result?.details) ? result.details : null
+  const detail = !details && result?.detail && typeof result.detail === 'object' ? result.detail : null
+  outputValueEl.value = details ? JSON.stringify(details, null, 2) : detail ? JSON.stringify(detail, null, 2) : ''
 }
 
 async function loadInitial() {
@@ -69,6 +79,12 @@ stopBtn.addEventListener('click', async () => {
   const res = await chrome.runtime.sendMessage({ type: 'STOP' })
   if (!res?.ok) {
     errorValueEl.textContent = typeof res?.error === 'string' ? res.error : 'Failed to stop.'
+  }
+  if (keepAlivePort) {
+    try {
+      keepAlivePort.disconnect()
+    } catch {}
+    keepAlivePort = null
   }
 })
 
