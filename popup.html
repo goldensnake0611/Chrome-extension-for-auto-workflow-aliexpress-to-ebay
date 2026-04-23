@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Progress Demo</title>
+    <title>AliExpress Scraper</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <div class="app">
       <div class="header">
-        <div class="title">Progress Demo</div>
+        <div class="title">AliExpress Scraper</div>
         <div id="status" class="status">Idle</div>
       </div>
 
@@ -23,6 +23,29 @@
         </div>
       </div>
 
+      <div class="result" aria-label="Target URL">
+        <div class="resultRow">
+          <div class="resultLabel">URL</div>
+          <input id="urlInput" class="textarea mono" spellcheck="false" placeholder="https://example.com" />
+        </div>
+      </div>
+
+      <div class="result" aria-label="Scrape result">
+        <div class="resultRow">
+          <div class="resultLabel">Listing</div>
+          <div id="listingValue" class="resultValue mono">—</div>
+        </div>
+        <div class="resultRow">
+          <div class="resultLabel">Total</div>
+          <div id="totalValue" class="resultValue">0</div>
+        </div>
+        <div class="resultRow">
+          <div class="resultLabel">Output</div>
+          <textarea id="outputValue" class="textarea" readonly spellcheck="false"></textarea>
+        </div>
+        <div id="errorValue" class="error"></div>
+      </div>
+
       <div class="actions">
         <button id="startBtn" class="btn primary" type="button">Start</button>
         <button id="stopBtn" class="btn" type="button" disabled>Stop</button>
@@ -32,4 +55,3 @@
     <script src="popup.js" type="module"></script>
   </body>
 </html>
-
