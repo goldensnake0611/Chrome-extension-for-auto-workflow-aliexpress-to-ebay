@@ -1,8 +1,51 @@
 const STORAGE_KEY = 'jobState'
 let currentJob = null
 const TARGET_URL = 'https://ja.aliexpress.com/item/1005010133856596.html?gatewayAdapt=usa2jpn4itemAdapt'
-const HREF_LIMIT = 2
+const HREF_LIMIT = 1
+const DOWNLOAD_BASE_DIR = 'AliExpressScraper'
 const keepAlivePorts = new Set()
+
+function sanitizePathSegment(input) {
+  const raw = ((input ?? '') + '').trim()
+  const cleaned = raw
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/g, '')
+  const short = cleaned.length > 80 ? cleaned.slice(0, 80).replace(/[. ]+$/g, '') : cleaned
+  return short || 'item'
+}
+
+function getImageExtension(url) {
+  try {
+    const u = new URL(url)
+    const path = u.pathname || ''
+    const m = path.match(/\.([a-zA-Z0-9]{2,5})$/)
+    const ext = (m?.[1] || '').toLowerCase()
+    if (ext && ext.length <= 5) return ext
+  } catch {}
+  return 'jpg'
+}
+
+async function downloadImagesToFolder(imageUrls, title, signal) {
+  const urls = Array.isArray(imageUrls) ? imageUrls.filter(u => typeof u === 'string' && u) : []
+  const unique = Array.from(new Set(urls))
+  if (!unique.length) return
+
+  const safeTitle = sanitizePathSegment(title)
+  const folder = `${DOWNLOAD_BASE_DIR}/${safeTitle}`
+
+  for (let i = 0; i < unique.length; i++) {
+    if (signal?.aborted) throw createAbortError()
+    const url = unique[i]
+    const ext = getImageExtension(url)
+    const index = String(i + 1).padStart(2, '0')
+    const filename = `${folder}/${index}.${ext}`
+    try {
+      await chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false })
+    } catch {}
+  }
+}
 
 async function getState() {
   const { [STORAGE_KEY]: state } = await chrome.storage.local.get(STORAGE_KEY)
@@ -226,6 +269,36 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         return idx >= 0 ? text.slice(idx + 1).trim() : text
       }
 
+      const businessDaysFromRange = value => {
+        const text = ((value || '') + '').trim()
+        const m = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[^0-9]*[-–〜~]\s*(\d{1,2})\s*月\s*(\d{1,2})/i)
+        if (!m) return null
+
+        const startMonth = Number(m[1])
+        const startDay = Number(m[2])
+        const endMonth = Number(m[3])
+        const endDay = Number(m[4])
+        if (!Number.isFinite(startMonth) || !Number.isFinite(startDay) || !Number.isFinite(endMonth) || !Number.isFinite(endDay)) {
+          return null
+        }
+
+        const year = new Date().getFullYear()
+        const start = new Date(year, startMonth - 1, startDay)
+        let end = new Date(year, endMonth - 1, endDay)
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null
+        if (end.getTime() < start.getTime()) end = new Date(year + 1, endMonth - 1, endDay)
+
+        let count = 0
+        const cursor = new Date(start.getTime())
+        for (let i = 0; i < 400; i++) {
+          const day = cursor.getDay()
+          if (day !== 0 && day !== 6) count++
+          if (cursor.getTime() >= end.getTime()) break
+          cursor.setDate(cursor.getDate() + 1)
+        }
+        return count
+      }
+
       const readText = selector => {
         const el = document.querySelector(selector)
         const text = (el?.innerText || '').trim()
@@ -305,7 +378,9 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         const root = roots[0]
         if (!root) return ''
         const text = ((root.textContent || root.innerText || '') + '').trim()
-        return extractAfterColon(text)
+        const value = extractAfterColon(text)
+        const days = businessDaysFromRange(value)
+        return days ?? value
       })()
 
       const category = (() => {
@@ -487,7 +562,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               'complete',
               abortController.signal
             )
-            if (detail) details.push(detail)
+            if (detail) {
+              await downloadImagesToFolder(
+                detail.images,
+                detail.title || detail['Custom Label (SKU)'] || 'item',
+                abortController.signal
+              )
+              details.push(detail)
+            }
           } catch {}
 
           const scraped = i + 1
