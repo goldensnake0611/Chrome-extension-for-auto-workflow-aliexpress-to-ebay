@@ -3,6 +3,8 @@ let currentJob = null
 const TARGET_URL = 'https://ja.aliexpress.com/item/1005010133856596.html?gatewayAdapt=usa2jpn4itemAdapt'
 const HREF_LIMIT = 1
 const DOWNLOAD_BASE_DIR = 'AliExpressScraper'
+const EBAY_LISTING_URL = 'https://ebay-mock-page.vercel.app/'
+const JPY_TO_USD_RATE = 0.0065
 const keepAlivePorts = new Set()
 
 function sanitizePathSegment(input) {
@@ -25,6 +27,70 @@ function getImageExtension(url) {
     if (ext && ext.length <= 5) return ext
   } catch {}
   return 'jpg'
+}
+
+function normalizeNumberLike(value) {
+  const text = ((value ?? '') + '').trim()
+  if (!text) return ''
+  const m = text.match(/(\d[\d,]*)(\.\d+)?/)
+  if (!m) return ''
+  return (m[1] + (m[2] || '')).replace(/,/g, '')
+}
+
+async function ensureEbayTab(signal) {
+  if (signal?.aborted) throw createAbortError()
+  const tabs = await chrome.tabs.query({})
+  const existing = (Array.isArray(tabs) ? tabs : []).find(
+    t => typeof t?.url === 'string' && t.url.startsWith(EBAY_LISTING_URL)
+  )
+  if (existing?.id && typeof existing.id === 'number') return existing.id
+  const tab = await chrome.tabs.create({ url: EBAY_LISTING_URL, active: true })
+  if (typeof tab?.id !== 'number') throw new Error('Failed to open eBay page.')
+  return tab.id
+}
+
+async function fillEbayListing(detail, signal) {
+  if (!detail || typeof detail !== 'object') return
+  const tabId = await ensureEbayTab(signal)
+  try {
+    await chrome.tabs.update(tabId, { active: true })
+  } catch {}
+  await waitForTabComplete(tabId, signal, 60000)
+  if (signal?.aborted) throw createAbortError()
+
+  const payload = {
+    title: detail.title || '',
+    priceFormat: detail['Price Format'] || '',
+    price: normalizeNumberLike(detail.price),
+    quantity: String(detail.quantity ?? ''),
+    shippingCost: String(detail.shippingCost ?? ''),
+    handlingTime: String(detail.handlingTime ?? ''),
+    itemLocation: String(detail['Item location'] ?? ''),
+  }
+
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['ebay_filler.js'] })
+  } catch {}
+
+  for (let i = 0; i < 40; i++) {
+    if (signal?.aborted) throw createAbortError()
+    try {
+      const res = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async p => {
+          if (typeof globalThis.fillEbayFormAsync !== 'function') {
+            throw new Error('fillEbayFormAsync is missing.')
+          }
+          await globalThis.fillEbayFormAsync(p)
+          return { ok: true }
+        },
+        args: [payload],
+      })
+      const first = Array.isArray(res) ? res[0] : null
+      if (first?.result?.ok) return
+    } catch {}
+    await new Promise(r => setTimeout(r, 500))
+  }
 }
 
 async function downloadImagesToFolder(imageUrls, title, signal) {
@@ -260,13 +326,43 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
 
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: async () => {
+    func: async jpyToUsdRate => {
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
       const extractAfterColon = value => {
         const text = ((value || '') + '').trim()
         const idx = text.indexOf(':')
         return idx >= 0 ? text.slice(idx + 1).trim() : text
+      }
+
+      const parseMoney = value => {
+        const text = ((value || '') + '').trim()
+        if (!text) return { amount: null, currency: '' }
+
+        const detected = /usd|\$|us\s*\$/i.test(text)
+          ? 'USD'
+          : /jpy|¥|￥/i.test(text)
+            ? 'JPY'
+            : ''
+        const currency = detected || 'JPY'
+
+        const m = text.match(/(\d[\d,]*)(\.\d+)?/)
+        if (!m) return { amount: null, currency }
+        const amount = Number((m[1] + (m[2] || '')).replace(/,/g, ''))
+        return { amount: Number.isFinite(amount) ? amount : null, currency }
+      }
+
+      const toUsd = money => {
+        if (money?.amount == null) return null
+        if (money.currency === 'JPY') return money.amount * Number(jpyToUsdRate || 0)
+        if (money.currency === 'USD') return money.amount
+        return money.amount
+      }
+
+      const roundUsd = value => {
+        const n = Number(value)
+        if (!Number.isFinite(n)) return null
+        return Math.round(n * 100) / 100
       }
 
       const businessDaysFromRange = value => {
@@ -363,8 +459,10 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         quantityRaw === 'Limit one per customer.' || quantityRaw === 'お一人様1点限り' ? 1 : quantityRaw
 
       const shippingCostRaw = readText('.dynamic-shipping-titleLayout')
-      const shippingCost =
-        shippingCostRaw === '送料無料' || shippingCostRaw === 'Free shipping' ? 0 : shippingCostRaw
+      const shippingCostUsd =
+        shippingCostRaw === '送料無料' || shippingCostRaw === 'Free shipping'
+          ? 0
+          : roundUsd(toUsd(parseMoney(shippingCostRaw)))
 
       const shippingService = (() => {
         const roots = Array.from(document.querySelectorAll('.dynamic-shipping-contentLayout'))
@@ -456,15 +554,18 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         return ''
       })()
 
+      const priceRaw = readText('.price-kr--current--NhhwBO1')
+      const priceUsd = roundUsd(toUsd(parseMoney(priceRaw)))
+
       return {
         finalUrl: location.href,
         detail: {
           title: readText('h1'),
-          price: readText('.price-kr--current--NhhwBO1'),
+          price: priceUsd ?? '',
           images: Array.from(new Set(images)),
           quantity,
           shippingService,
-          shippingCost,
+          shippingCost: shippingCostUsd ?? '',
           handlingTime,
           'Item location': itemLocation,
           Category: category,
@@ -476,6 +577,7 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         },
       }
     },
+    args: [JPY_TO_USD_RATE],
   })
 
   const first = Array.isArray(results) ? results[0] : null
@@ -580,6 +682,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         try {
           await updateTabUrl(tabId, tabUrl, abortController.signal)
         } catch {}
+
+        if (details.length) {
+          try {
+            await fillEbayListing(details[0], abortController.signal)
+          } catch {}
+        }
 
         await setState({ total, scraped: total, progress: 90 })
         await stopJob({

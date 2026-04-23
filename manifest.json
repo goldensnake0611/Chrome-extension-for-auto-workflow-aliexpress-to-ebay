@@ -11,6 +11,13 @@
     "service_worker": "service_worker.js",
     "type": "module"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://ebay-mock-page.vercel.app/*"],
+      "js": ["ebay_filler.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "permissions": ["storage", "tabs", "scripting", "downloads"],
   "host_permissions": ["<all_urls>"]
 }
