@@ -101,6 +101,7 @@ async function fillEbayListing(detail, signal) {
     shippingCost: String(detail.shippingCost ?? ''),
     handlingTime: String(detail.handlingTime ?? ''),
     itemLocation: String(detail['Item location'] ?? ''),
+    description: String(detail.Description ?? ''),
     photos,
   }
 
@@ -622,12 +623,11 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         return 'Fixed'
       })()
 
-      const description = readTextAny([
-        '#product-description',
-        '[data-pl="product-description"]',
-        '.product-description',
-        '[id*="description"]',
-      ]) || readMeta('meta[name="description"]')
+      const description = (() => {
+        const el = document.querySelector('div.detail-desc-decorate-richtext')
+        const html = (el?.innerHTML || '').trim()
+        return html || ''
+      })()
 
       const itemLocation = await (async () => {
         const trigger = document.querySelector('div.store-detail--storeNameWrap--Z45gRHH')

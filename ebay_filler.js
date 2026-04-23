@@ -47,6 +47,7 @@ function fillEbayForm(payload) {
   const shippingCost = String(payload?.shippingCost ?? '')
   const handlingTime = String(payload?.handlingTime ?? '')
   const itemLocation = String(payload?.itemLocation ?? '')
+  const description = String(payload?.description ?? '')
 
   setInputValue($('s0-1-0-25-5-@TITLE-5-33-11-4-se-textbox'), title)
   setSelectValue($('s0-1-0-25-5-@PRICE-1-33-2-8-5-format'), priceFormat)
@@ -64,6 +65,14 @@ function fillEbayForm(payload) {
       )
       if (opt) setSelectValue(itemOriginSelect, opt.value)
     }
+  }
+
+  const descEl = $('s0-1-0-25-5-@DESCRIPTION-1-33-@rich-text-editor-rawEditor')
+  if (descEl) {
+    descEl.focus?.()
+    descEl.innerHTML = description
+    descEl.dispatchEvent(new Event('input', { bubbles: true }))
+    descEl.dispatchEvent(new Event('change', { bubbles: true }))
   }
 }
 
