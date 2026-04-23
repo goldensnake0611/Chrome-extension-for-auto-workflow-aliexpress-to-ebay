@@ -80,11 +80,55 @@ async function waitForId(id, timeoutMs = 15000) {
 async function fillEbayFormAsync(payload) {
   await waitForId('s0-1-0-25-5-@TITLE-5-33-11-4-se-textbox', 20000)
   fillEbayForm(payload)
+  if (Array.isArray(payload?.photos) && payload.photos.length) {
+    await uploadPhotos(payload.photos)
+  }
   return true
 }
 
 globalThis.fillEbayForm = fillEbayForm
 globalThis.fillEbayFormAsync = fillEbayFormAsync
+
+async function uploadPhotos(photos) {
+  const browseId = 's0-1-0-25-5-@PHOTOS-browse-btn'
+  await waitForId(browseId, 20000)
+  const browseEl = document.getElementById(browseId)
+
+  let fileInput = null
+  if (browseEl && browseEl.tagName === 'INPUT' && browseEl.type === 'file') {
+    fileInput = browseEl
+  } else {
+    fileInput =
+      browseEl?.querySelector?.('input[type="file"]') ||
+      browseEl?.closest?.('label, div')?.querySelector?.('input[type="file"]') ||
+      document.querySelector('input[type="file"]')
+  }
+  if (!fileInput) return false
+
+  const list = Array.isArray(photos) ? photos : []
+  const dt = new DataTransfer()
+  for (const item of list) {
+    const dataUrl = String(item?.dataUrl || '')
+    if (!dataUrl.startsWith('data:')) continue
+    const name = String(item?.name || 'photo.jpg')
+    const blob = await (await fetch(dataUrl)).blob()
+    const file = new File([blob], name, { type: blob.type || 'image/jpeg' })
+    dt.items.add(file)
+  }
+
+  if (!dt.files.length) return false
+  fileInput.files = dt.files
+  fileInput.dispatchEvent(new Event('input', { bubbles: true }))
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+  await new Promise(r => setTimeout(r, 500))
+  try {
+    fileInput.value = ''
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+  } catch {}
+  return true
+}
+
+globalThis.uploadPhotos = uploadPhotos
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== 'FILL_EBAY') return

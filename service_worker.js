@@ -29,6 +29,27 @@ function getImageExtension(url) {
   return 'jpg'
 }
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  const chunkSize = 0x8000
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
+}
+
+async function fetchImageAsDataUrl(url, signal) {
+  if (signal?.aborted) throw createAbortError()
+  const res = await fetch(url, { signal })
+  if (!res.ok) throw new Error(`Image fetch failed (${res.status}).`)
+  const blob = await res.blob()
+  const buffer = await blob.arrayBuffer()
+  const base64 = arrayBufferToBase64(buffer)
+  const type = blob.type || 'image/jpeg'
+  return { dataUrl: `data:${type};base64,${base64}`, type }
+}
+
 function normalizeNumberLike(value) {
   const text = ((value ?? '') + '').trim()
   if (!text) return ''
@@ -58,6 +79,20 @@ async function fillEbayListing(detail, signal) {
   await waitForTabComplete(tabId, signal, 60000)
   if (signal?.aborted) throw createAbortError()
 
+  const imageUrls = Array.isArray(detail.images) ? detail.images.filter(u => typeof u === 'string' && u) : []
+  const photos = []
+  for (let i = 0; i < Math.min(24, imageUrls.length); i++) {
+    if (signal?.aborted) throw createAbortError()
+    const url = imageUrls[i]
+    try {
+      const { dataUrl, type } = await fetchImageAsDataUrl(url, signal)
+      const extFromType = (type || '').split('/')[1] || ''
+      const ext = extFromType ? extFromType.toLowerCase() : getImageExtension(url)
+      const index = String(i + 1).padStart(2, '0')
+      photos.push({ name: `${index}.${ext}`, dataUrl })
+    } catch {}
+  }
+
   const payload = {
     title: detail.title || '',
     priceFormat: detail['Price Format'] || '',
@@ -66,6 +101,7 @@ async function fillEbayListing(detail, signal) {
     shippingCost: String(detail.shippingCost ?? ''),
     handlingTime: String(detail.handlingTime ?? ''),
     itemLocation: String(detail['Item location'] ?? ''),
+    photos,
   }
 
   try {
@@ -96,10 +132,11 @@ async function fillEbayListing(detail, signal) {
 async function downloadImagesToFolder(imageUrls, title, signal) {
   const urls = Array.isArray(imageUrls) ? imageUrls.filter(u => typeof u === 'string' && u) : []
   const unique = Array.from(new Set(urls))
-  if (!unique.length) return
+  if (!unique.length) return []
 
   const safeTitle = sanitizePathSegment(title)
   const folder = `${DOWNLOAD_BASE_DIR}/${safeTitle}`
+  const downloadIds = []
 
   for (let i = 0; i < unique.length; i++) {
     if (signal?.aborted) throw createAbortError()
@@ -108,7 +145,77 @@ async function downloadImagesToFolder(imageUrls, title, signal) {
     const index = String(i + 1).padStart(2, '0')
     const filename = `${folder}/${index}.${ext}`
     try {
-      await chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false })
+      const id = await chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: false })
+      if (typeof id === 'number') downloadIds.push(id)
+    } catch {}
+  }
+
+  return downloadIds
+}
+
+async function waitForDownloadComplete(downloadId, signal, timeoutMs = 60000) {
+  if (signal?.aborted) throw createAbortError()
+
+  try {
+    const items = await chrome.downloads.search({ id: downloadId })
+    const item = Array.isArray(items) ? items[0] : null
+    if (item?.state === 'complete') return
+    if (item?.state === 'interrupted') throw new Error('Download interrupted.')
+  } catch {}
+
+  await new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createAbortError())
+      return
+    }
+
+    let done = false
+    let timeoutId = null
+
+    const cleanup = () => {
+      if (done) return
+      done = true
+      if (timeoutId) clearTimeout(timeoutId)
+      chrome.downloads.onChanged.removeListener(onChanged)
+      if (signal) signal.removeEventListener('abort', onAbort)
+    }
+
+    const onAbort = () => {
+      cleanup()
+      reject(createAbortError())
+    }
+
+    const onChanged = delta => {
+      if (!delta || delta.id !== downloadId) return
+      if (delta.state?.current === 'complete') {
+        cleanup()
+        resolve()
+        return
+      }
+      if (delta.state?.current === 'interrupted') {
+        cleanup()
+        reject(new Error('Download interrupted.'))
+      }
+    }
+
+    timeoutId = setTimeout(() => {
+      cleanup()
+      reject(new Error('Download timed out.'))
+    }, timeoutMs)
+
+    chrome.downloads.onChanged.addListener(onChanged)
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+async function removeDownloadedFiles(downloadIds) {
+  const ids = Array.isArray(downloadIds) ? downloadIds.filter(id => typeof id === 'number') : []
+  for (const id of ids) {
+    try {
+      await chrome.downloads.removeFile(id)
+    } catch {}
+    try {
+      await chrome.downloads.erase({ id })
     } catch {}
   }
 }
@@ -651,6 +758,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await setState({ total, scraped: 0 })
 
         const details = []
+        const downloadIdsForCleanup = []
         for (let i = 0; i < total; i++) {
           if (abortController.signal.aborted) throw createAbortError()
           const href = hrefs[i]
@@ -665,11 +773,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               abortController.signal
             )
             if (detail) {
-              await downloadImagesToFolder(
+              const ids = await downloadImagesToFolder(
                 detail.images,
                 detail.title || detail['Custom Label (SKU)'] || 'item',
                 abortController.signal
               )
+              if (Array.isArray(ids) && ids.length) downloadIdsForCleanup.push(...ids)
               details.push(detail)
             }
           } catch {}
@@ -687,6 +796,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           try {
             await fillEbayListing(details[0], abortController.signal)
           } catch {}
+        }
+
+        if (downloadIdsForCleanup.length) {
+          for (const id of downloadIdsForCleanup) {
+            try {
+              await waitForDownloadComplete(id, abortController.signal, 60000)
+            } catch {}
+          }
+          await removeDownloadedFiles(downloadIdsForCleanup)
         }
 
         await setState({ total, scraped: total, progress: 90 })
