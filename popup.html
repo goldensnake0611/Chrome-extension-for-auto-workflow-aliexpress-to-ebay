@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Progress Demo</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <div class="header">
+        <div class="title">Progress Demo</div>
+        <div id="status" class="status">Idle</div>
+      </div>
+
+      <div class="progressWrap" aria-label="Progress">
+        <div class="progressTrack">
+          <div id="progressBar" class="progressBar" style="width: 0%"></div>
+        </div>
+        <div class="progressMeta">
+          <div id="progressLabel" class="progressLabel">0%</div>
+          <div id="progressHint" class="progressHint">Ready.</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="startBtn" class="btn primary" type="button">Start</button>
+        <button id="stopBtn" class="btn" type="button" disabled>Stop</button>
+      </div>
+    </div>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
+

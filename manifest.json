@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Progress Demo (MV3)",
+  "version": "0.1.0",
+  "description": "MV3 demo extension with a Start button and progress bar.",
+  "action": {
+    "default_title": "Progress Demo",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "service_worker.js",
+    "type": "module"
+  },
+  "permissions": ["storage", "alarms"]
+}
+
