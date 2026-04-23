@@ -1,5 +1,5 @@
 const STORAGE_KEY = 'jobState'
-const LAST_URL_KEY = 'lastUrl'
+const TARGET_URL = 'https://ja.aliexpress.com/item/1005010133856596.html?gatewayAdapt=usa2jpn4itemAdapt'
 
 function $(id) {
   const el = document.getElementById(id)
@@ -17,7 +17,6 @@ const errorValueEl = $('errorValue')
 const listingValueEl = $('listingValue')
 const totalValueEl = $('totalValue')
 const outputValueEl = $('outputValue')
-const urlInputEl = $('urlInput')
 
 function render(state) {
   const progress = Math.max(0, Math.min(100, Number(state?.progress ?? 0)))
@@ -55,20 +54,12 @@ function render(state) {
 }
 
 async function loadInitial() {
-  const [stateRes, lastUrlRes] = await Promise.all([
-    chrome.runtime.sendMessage({ type: 'GET_STATE' }),
-    chrome.storage.local.get(LAST_URL_KEY),
-  ])
+  const stateRes = await chrome.runtime.sendMessage({ type: 'GET_STATE' })
   if (stateRes?.ok) render(stateRes.state)
-  if (typeof lastUrlRes?.[LAST_URL_KEY] === 'string') {
-    urlInputEl.value = lastUrlRes[LAST_URL_KEY]
-  }
 }
 
 startBtn.addEventListener('click', async () => {
-  const url = urlInputEl.value.trim()
-  await chrome.storage.local.set({ [LAST_URL_KEY]: url })
-  const res = await chrome.runtime.sendMessage({ type: 'START', url })
+  const res = await chrome.runtime.sendMessage({ type: 'START', url: TARGET_URL })
   if (!res?.ok) {
     errorValueEl.textContent = typeof res?.error === 'string' ? res.error : 'Failed to start.'
   }

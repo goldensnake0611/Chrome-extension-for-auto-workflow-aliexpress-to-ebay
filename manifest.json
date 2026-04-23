@@ -11,6 +11,6 @@
     "service_worker": "service_worker.js",
     "type": "module"
   },
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": ["<all_urls>"]
 }
