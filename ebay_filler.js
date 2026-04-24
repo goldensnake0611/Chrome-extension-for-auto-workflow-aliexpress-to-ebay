@@ -77,12 +77,23 @@ async function waitForId(id, timeoutMs = 15000) {
   return null
 }
 
+async function clickListItButton() {
+  const btn = await waitForId('list-it-btn', 20000)
+  if (!btn) return false
+  try {
+    btn.click()
+  } catch {}
+  await new Promise(r => setTimeout(r, 300))
+  return true
+}
+
 async function fillEbayFormAsync(payload) {
   await waitForId('s0-1-0-25-5-@TITLE-5-33-11-4-se-textbox', 20000)
   fillEbayForm(payload)
   if (Array.isArray(payload?.photos) && payload.photos.length) {
     await uploadPhotos(payload.photos)
   }
+  await clickListItButton()
   return true
 }
 

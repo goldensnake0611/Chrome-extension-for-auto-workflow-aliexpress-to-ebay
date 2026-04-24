@@ -820,38 +820,34 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         await setState({ progress: 25 })
         const { tabId, tabUrl, status } = await getActiveTab()
-        const { finalUrl: listingFinalUrl, hrefs } = await scrapeHrefsFromTab(
-          tabId,
-          tabUrl,
-          status,
-          abortController.signal
-        )
+        const shouldSkipHrefFetch = tabUrl !== targetUrl
 
-        const total = Array.isArray(hrefs) ? hrefs.length : 0
-        await setState({ total, scraped: 0 })
+        let listingFinalUrl = tabUrl
+        let hrefs = []
+        if (!shouldSkipHrefFetch) {
+          const res = await scrapeHrefsFromTab(tabId, tabUrl, status, abortController.signal)
+          listingFinalUrl = res.finalUrl
+          hrefs = res.hrefs
+        }
+
+        const hrefTotal = Array.isArray(hrefs) ? hrefs.length : 0
+        const plannedTotal = shouldSkipHrefFetch ? 1 : hrefTotal
+        await setState({ total: plannedTotal, scraped: 0 })
 
         const details = []
-        const downloadIdsForCleanup = []
-        if (total === 0) {
+        if (shouldSkipHrefFetch || hrefTotal === 0) {
           try {
-            const { detail } = await scrapeProductDetailFromTab(
-              tabId,
-              tabUrl,
-              status,
-              abortController.signal
-            )
+            const { finalUrl, detail } = await scrapeProductDetailFromTab(tabId, tabUrl, status, abortController.signal)
+            if (typeof finalUrl === 'string' && finalUrl) listingFinalUrl = finalUrl
             if (detail) {
-              const ids = await downloadImagesToFolder(
-                detail.images,
-                detail.title || detail['Custom Label (SKU)'] || 'item',
-                abortController.signal
-              )
-              if (Array.isArray(ids) && ids.length) downloadIdsForCleanup.push(...ids)
               details.push(detail)
             }
           } catch {}
+          if (shouldSkipHrefFetch && details.length) {
+            await setState({ scraped: 1, progress: 70 })
+          }
         }
-        for (let i = 0; i < total; i++) {
+        for (let i = 0; i < hrefTotal; i++) {
           if (abortController.signal.aborted) throw createAbortError()
           const href = hrefs[i]
           if (typeof href !== 'string' || !href) continue
@@ -865,18 +861,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               abortController.signal
             )
             if (detail) {
-              const ids = await downloadImagesToFolder(
-                detail.images,
-                detail.title || detail['Custom Label (SKU)'] || 'item',
-                abortController.signal
-              )
-              if (Array.isArray(ids) && ids.length) downloadIdsForCleanup.push(...ids)
               details.push(detail)
             }
           } catch {}
 
           const scraped = i + 1
-          const pct = total ? Math.floor((scraped / total) * 65) : 0
+          const pct = hrefTotal ? Math.floor((scraped / hrefTotal) * 65) : 0
           await setState({ scraped, progress: 25 + pct })
         }
 
@@ -890,19 +880,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           } catch {}
         }
 
-        if (downloadIdsForCleanup.length) {
-          for (const id of downloadIdsForCleanup) {
-            try {
-              await waitForDownloadComplete(id, abortController.signal, 60000)
-            } catch {}
-          }
-          await removeDownloadedFiles(downloadIdsForCleanup)
-        }
-
-        await setState({ total, scraped: total, progress: 90 })
+        const finalScraped = shouldSkipHrefFetch ? (details.length ? 1 : 0) : plannedTotal
+        await setState({ total: plannedTotal, scraped: finalScraped, progress: 90 })
         await stopJob({
           progress: 100,
-          result: { listingUrl: targetUrl, finalUrl: listingFinalUrl, details },
+          result: { listingUrl: shouldSkipHrefFetch ? tabUrl : targetUrl, finalUrl: listingFinalUrl, details },
           error: null,
         })
       } catch (e) {
