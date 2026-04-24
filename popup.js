@@ -16,7 +16,6 @@ const stopBtn = $('stopBtn')
 const errorValueEl = $('errorValue')
 const listingValueEl = $('listingValue')
 const totalValueEl = $('totalValue')
-const outputValueEl = $('outputValue')
 let keepAlivePort = null
 
 function render(state) {
@@ -57,10 +56,6 @@ function render(state) {
   errorValueEl.textContent = error
   listingValueEl.textContent = result?.listingUrl || '—'
   totalValueEl.textContent = Number.isFinite(total) ? String(total) : '0'
-
-  const details = Array.isArray(result?.details) ? result.details : null
-  const detail = !details && result?.detail && typeof result.detail === 'object' ? result.detail : null
-  outputValueEl.value = details ? JSON.stringify(details, null, 2) : detail ? JSON.stringify(detail, null, 2) : ''
 }
 
 async function loadInitial() {
