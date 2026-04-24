@@ -50,6 +50,19 @@ async function fetchImageAsDataUrl(url, signal) {
   return { dataUrl: `data:${type};base64,${base64}`, type }
 }
 
+function round2Number(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return ''
+  return Math.round(n * 100) / 100
+}
+
+function normalizeCurrency(value) {
+  const t = String(value ?? '').trim().toUpperCase()
+  if (!t) return ''
+  if (t === 'JPY' || t === 'YEN' || t.includes('円')) return 'JPY'
+  return t
+}
+
 function normalizeNumberLike(value) {
   const text = ((value ?? '') + '').trim()
   if (!text) return ''
@@ -93,12 +106,24 @@ async function fillEbayListing(detail, signal) {
     } catch {}
   }
 
+  const priceCurrency = normalizeCurrency(detail.priceCurrency)
+  const priceRaw = normalizeNumberLike(detail.price)
+  const priceUsd =
+    priceCurrency === 'JPY' ? String(round2Number(Number(priceRaw || 0) * JPY_TO_USD_RATE)) : priceRaw
+
+  const shippingCurrency = normalizeCurrency(detail.shippingCostCurrency)
+  const shippingRaw = normalizeNumberLike(detail.shippingCost)
+  const shippingCostUsd =
+    shippingCurrency === 'JPY'
+      ? String(round2Number(Number(shippingRaw || 0) * JPY_TO_USD_RATE))
+      : String(detail.shippingCost ?? '')
+
   const payload = {
     title: detail.title || '',
     priceFormat: detail['Price Format'] || '',
-    price: normalizeNumberLike(detail.price),
+    price: priceUsd,
     quantity: String(detail.quantity ?? ''),
-    shippingCost: String(detail.shippingCost ?? ''),
+    shippingCost: shippingCostUsd,
     handlingTime: String(detail.handlingTime ?? ''),
     itemLocation: String(detail['Item location'] ?? ''),
     description: String(detail.Description ?? ''),
@@ -434,7 +459,7 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
 
   const results = await chrome.scripting.executeScript({
     target: { tabId },
-    func: async jpyToUsdRate => {
+    func: async () => {
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
       const extractAfterColon = value => {
@@ -447,12 +472,23 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         const text = ((value || '') + '').trim()
         if (!text) return { amount: null, currency: '' }
 
-        const detected = /usd|\$|us\s*\$/i.test(text)
+        const currency = /usd|\$|us\s*\$/i.test(text)
           ? 'USD'
-          : /jpy|¥|￥/i.test(text)
+          : /jpy|yen|円|¥|￥/i.test(text)
             ? 'JPY'
-            : ''
-        const currency = detected || 'JPY'
+            : /eur|€/i.test(text)
+              ? 'EUR'
+              : /gbp|£/i.test(text)
+                ? 'GBP'
+                : /aud/i.test(text)
+                  ? 'AUD'
+                  : /cad/i.test(text)
+                    ? 'CAD'
+                    : /krw|₩/i.test(text)
+                      ? 'KRW'
+                      : /cny|rmb|￥/i.test(text)
+                        ? 'CNY'
+                        : ''
 
         const m = text.match(/(\d[\d,]*)(\.\d+)?/)
         if (!m) return { amount: null, currency }
@@ -460,28 +496,60 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         return { amount: Number.isFinite(amount) ? amount : null, currency }
       }
 
-      const toUsd = money => {
-        if (money?.amount == null) return null
-        if (money.currency === 'JPY') return money.amount * Number(jpyToUsdRate || 0)
-        if (money.currency === 'USD') return money.amount
-        return money.amount
-      }
-
-      const roundUsd = value => {
-        const n = Number(value)
-        if (!Number.isFinite(n)) return null
-        return Math.round(n * 100) / 100
-      }
-
       const businessDaysFromRange = value => {
         const text = ((value || '') + '').trim()
-        const m = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[^0-9]*[-–〜~]\s*(\d{1,2})\s*月\s*(\d{1,2})/i)
-        if (!m) return null
+        let startMonth = null
+        let startDay = null
+        let endMonth = null
+        let endDay = null
 
-        const startMonth = Number(m[1])
-        const startDay = Number(m[2])
-        const endMonth = Number(m[3])
-        const endDay = Number(m[4])
+        const jp = text.match(
+          /(\d{1,2})\s*月\s*(\d{1,2})\s*[^0-9]*[-–〜~]\s*(\d{1,2})\s*月\s*(\d{1,2})/i
+        )
+        if (jp) {
+          startMonth = Number(jp[1])
+          startDay = Number(jp[2])
+          endMonth = Number(jp[3])
+          endDay = Number(jp[4])
+        } else {
+          const monthMap = {
+            jan: 1,
+            january: 1,
+            feb: 2,
+            february: 2,
+            mar: 3,
+            march: 3,
+            apr: 4,
+            april: 4,
+            may: 5,
+            jun: 6,
+            june: 6,
+            jul: 7,
+            july: 7,
+            aug: 8,
+            august: 8,
+            sep: 9,
+            sept: 9,
+            september: 9,
+            oct: 10,
+            october: 10,
+            nov: 11,
+            november: 11,
+            dec: 12,
+            december: 12,
+          }
+
+          const en = text.match(
+            /([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?\s*[-–〜~]\s*(?:([a-z]+)\s+)?(\d{1,2})(?:st|nd|rd|th)?/i
+          )
+          if (!en) return null
+
+          startMonth = monthMap[String(en[1]).toLowerCase()] ?? null
+          startDay = Number(en[2])
+          endMonth = en[3] ? monthMap[String(en[3]).toLowerCase()] ?? null : startMonth
+          endDay = Number(en[4])
+        }
+
         if (!Number.isFinite(startMonth) || !Number.isFinite(startDay) || !Number.isFinite(endMonth) || !Number.isFinite(endDay)) {
           return null
         }
@@ -515,13 +583,19 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         return content
       }
 
-      const readTextAny = selectors => {
-        for (const selector of selectors) {
-          const t = readText(selector)
-          if (t) return t
-        }
-        return ''
+      const normalizeCurrency = value => {
+        const t = ((value || '') + '').trim().toUpperCase()
+        if (!t) return ''
+        if (t === 'JPY' || t === 'YEN' || t.includes('円')) return 'JPY'
+        return t
       }
+
+      const pageCurrency = normalizeCurrency(
+        readMeta('meta[property="og:price:currency"]') ||
+        readMeta('meta[property="product:price:currency"]') ||
+        readMeta('meta[name="currency"]') ||
+        ''
+      )
 
       const findSpecValue = labelMatchers => {
         const nodes = Array.from(document.querySelectorAll('dl, tr, li, div'))
@@ -564,13 +638,16 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
 
       const quantityRaw = readText('.quantity--info--jnoo_pD')
       const quantity =
-        quantityRaw === 'Limit one per customer.' || quantityRaw === 'お一人様1点限り' ? 1 : quantityRaw
+        quantityRaw === 'Limit one per customer.' ? 1 : quantityRaw
 
       const shippingCostRaw = readText('.dynamic-shipping-titleLayout')
-      const shippingCostUsd =
-        shippingCostRaw === '送料無料' || shippingCostRaw === 'Free shipping'
-          ? 0
-          : roundUsd(toUsd(parseMoney(shippingCostRaw)))
+      const shippingCostMoney =
+        shippingCostRaw === 'Free shipping'
+          ? { amount: 0, currency: 'USD' }
+          : (() => {
+              const m = parseMoney(shippingCostRaw)
+              return { amount: m.amount, currency: m.currency || pageCurrency || 'JPY' }
+            })()
 
       const shippingService = (() => {
         const roots = Array.from(document.querySelectorAll('.dynamic-shipping-contentLayout'))
@@ -602,12 +679,12 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
       })()
 
       const brand = (() => {
-        const v = findSpecValue([/brand/i, /ブランド/])
+        const v = findSpecValue([/brand/])
         return v
       })()
 
       const categoryCondition = (() => {
-        const v = findSpecValue([/condition/i, /状態/, /コンディション/])
+        const v = findSpecValue([/condition/])
         return v || 'New'
       })()
 
@@ -624,28 +701,34 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
       })()
 
       const description = await (async () => {
-        const cleanLine = value =>
-          ((value || '') + '')
-            .replace(/\u00a0/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim()
+        const cleanMultiline = value => {
+          const raw = ((value || '') + '').replace(/\u00a0/g, ' ')
+          const lines = raw
+            .split(/\r?\n/)
+            .map(l => l.replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+          return lines.join('\n')
+        }
 
-        const extractFromRoots = () => {
-          const roots = Array.from(document.querySelectorAll('div.detail-desc-decorate-richtext'))
-          let bestLines = []
-          for (const root of roots) {
-            const ps = Array.from(root.querySelectorAll('p'))
-            const lines = ps.map(p => cleanLine(p?.textContent || p?.innerText || '')).filter(Boolean)
-            if (lines.length > bestLines.length) bestLines = lines
+        const findProductDescription = () =>
+          document.getElementById('product-description') || document.querySelector('#product-description')
+
+        for (let i = 0; i < 30; i++) {
+          const el = findProductDescription()
+          if (el) {
+            alert(`found the product-description at ${i}`)
+            const text = cleanMultiline(el.innerText || el.textContent || '')
+            if (text) return text
           }
-          return bestLines.join('\n')
+
+          try {
+            window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.85)))
+          } catch {}
+          await sleep(400)
         }
 
-        for (let i = 0; i < 40; i++) {
-          const text = extractFromRoots()
-          if (text) return text
-          await sleep(250)
-        }
+        alert('not found the product-description')
+
         return ''
       })()
 
@@ -682,17 +765,22 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
       })()
 
       const priceRaw = readText('.price-kr--current--NhhwBO1')
-      const priceUsd = roundUsd(toUsd(parseMoney(priceRaw)))
+      const priceMoney = (() => {
+        const m = parseMoney(priceRaw)
+        return { amount: m.amount, currency: m.currency || pageCurrency || 'JPY' }
+      })()
 
       return {
         finalUrl: location.href,
         detail: {
           title: readText('h1'),
-          price: priceUsd ?? '',
+          price: priceMoney.amount ?? '',
+          priceCurrency: priceMoney.currency || '',
           images: Array.from(new Set(images)),
           quantity,
           shippingService,
-          shippingCost: shippingCostUsd ?? '',
+          shippingCost: shippingCostMoney.amount ?? '',
+          shippingCostCurrency: shippingCostMoney.currency || '',
           handlingTime,
           'Item location': itemLocation,
           Category: category,
@@ -704,7 +792,6 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         },
       }
     },
-    args: [JPY_TO_USD_RATE],
   })
 
   const first = Array.isArray(results) ? results[0] : null
