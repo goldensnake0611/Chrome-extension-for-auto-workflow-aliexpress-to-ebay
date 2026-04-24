@@ -126,7 +126,6 @@ async function fillEbayListing(detail, signal) {
     shippingCost: shippingCostUsd,
     handlingTime: String(detail.handlingTime ?? ''),
     itemLocation: String(detail['Item location'] ?? ''),
-    description: String(detail.Description ?? ''),
     photos,
   }
 
@@ -700,38 +699,6 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
         return 'Fixed'
       })()
 
-      const description = await (async () => {
-        const cleanMultiline = value => {
-          const raw = ((value || '') + '').replace(/\u00a0/g, ' ')
-          const lines = raw
-            .split(/\r?\n/)
-            .map(l => l.replace(/\s+/g, ' ').trim())
-            .filter(Boolean)
-          return lines.join('\n')
-        }
-
-        const findProductDescription = () =>
-          document.getElementById('product-description') || document.querySelector('#product-description')
-
-        for (let i = 0; i < 30; i++) {
-          const el = findProductDescription()
-          if (el) {
-            alert(`found the product-description at ${i}`)
-            const text = cleanMultiline(el.innerText || el.textContent || '')
-            if (text) return text
-          }
-
-          try {
-            window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.85)))
-          } catch {}
-          await sleep(400)
-        }
-
-        alert('not found the product-description')
-
-        return ''
-      })()
-
       const itemLocation = await (async () => {
         const trigger = document.querySelector('div.store-detail--storeNameWrap--Z45gRHH')
         if (!trigger) return ''
@@ -788,7 +755,6 @@ async function scrapeProductDetailFromTab(tabId, fallbackUrl, status, signal) {
           Brand: brand,
           'Custom Label (SKU)': customLabelSku,
           'Price Format': priceFormat,
-          Description: description,
         },
       }
     },
