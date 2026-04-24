@@ -16,7 +16,16 @@ const stopBtn = $('stopBtn')
 const errorValueEl = $('errorValue')
 const listingValueEl = $('listingValue')
 const totalValueEl = $('totalValue')
+const listModeToggleEl = $('listModeToggle')
+const listModeTextEl = $('listModeText')
 let keepAlivePort = null
+const LIST_MODE_KEY = 'listMode'
+
+function setListModeUi(mode) {
+  const m = mode === 'manual' ? 'manual' : 'auto'
+  listModeToggleEl.checked = m === 'auto'
+  listModeTextEl.textContent = m === 'auto' ? 'Auto' : 'Manual'
+}
 
 function render(state) {
   const progress = Math.max(0, Math.min(100, Number(state?.progress ?? 0)))
@@ -39,6 +48,7 @@ function render(state) {
 
   startBtn.disabled = running
   stopBtn.disabled = !running
+  listModeToggleEl.disabled = running
 
   if (running) {
     if (!keepAlivePort) {
@@ -61,10 +71,18 @@ function render(state) {
 async function loadInitial() {
   const stateRes = await chrome.runtime.sendMessage({ type: 'GET_STATE' })
   if (stateRes?.ok) render(stateRes.state)
+
+  const { [LIST_MODE_KEY]: savedMode } = await chrome.storage.local.get(LIST_MODE_KEY)
+  const mode = savedMode === 'manual' ? 'manual' : 'auto'
+  if (savedMode !== 'manual' && savedMode !== 'auto') {
+    await chrome.storage.local.set({ [LIST_MODE_KEY]: 'auto' })
+  }
+  setListModeUi(mode)
 }
 
 startBtn.addEventListener('click', async () => {
-  const res = await chrome.runtime.sendMessage({ type: 'START', url: TARGET_URL })
+  const listMode = listModeToggleEl.checked ? 'auto' : 'manual'
+  const res = await chrome.runtime.sendMessage({ type: 'START', url: TARGET_URL, listMode })
   if (!res?.ok) {
     errorValueEl.textContent = typeof res?.error === 'string' ? res.error : 'Failed to start.'
   }
@@ -85,8 +103,18 @@ stopBtn.addEventListener('click', async () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return
+  if (changes[LIST_MODE_KEY]) {
+    const v = changes[LIST_MODE_KEY]?.newValue
+    setListModeUi(v === 'manual' ? 'manual' : 'auto')
+  }
   if (!changes[STORAGE_KEY]) return
   render(changes[STORAGE_KEY].newValue)
+})
+
+listModeToggleEl.addEventListener('change', async () => {
+  const listMode = listModeToggleEl.checked ? 'auto' : 'manual'
+  setListModeUi(listMode)
+  await chrome.storage.local.set({ [LIST_MODE_KEY]: listMode })
 })
 
 void loadInitial()

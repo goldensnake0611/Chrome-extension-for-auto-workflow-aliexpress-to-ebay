@@ -80,11 +80,54 @@ async function waitForId(id, timeoutMs = 15000) {
 async function clickListItButton() {
   const btn = await waitForId('list-it-btn', 20000)
   if (!btn) return false
+  for (let i = 0; i < 200; i++) {
+    if (!btn.disabled) break
+    await new Promise(r => setTimeout(r, 100))
+  }
   try {
     btn.click()
   } catch {}
   await new Promise(r => setTimeout(r, 300))
   return true
+}
+
+async function waitForUserListItClick(timeoutMs = 30 * 60 * 1000) {
+  const btn = await waitForId('list-it-btn', 20000)
+  if (!btn) return false
+
+  let port = null
+  try {
+    port = chrome.runtime.connect({ name: 'manual-list-wait' })
+  } catch {}
+
+  const start = Date.now()
+  return await new Promise(resolve => {
+    let done = false
+    const cleanup = () => {
+      if (done) return
+      done = true
+      btn.removeEventListener('click', onClick, true)
+      if (timeoutId) clearTimeout(timeoutId)
+      if (port) {
+        try {
+          port.disconnect()
+        } catch {}
+      }
+    }
+
+    const onClick = () => {
+      cleanup()
+      resolve(true)
+    }
+
+    const remaining = Math.max(0, timeoutMs - (Date.now() - start))
+    const timeoutId = setTimeout(() => {
+      cleanup()
+      resolve(false)
+    }, remaining)
+
+    btn.addEventListener('click', onClick, true)
+  })
 }
 
 async function fillEbayFormAsync(payload) {
@@ -93,7 +136,13 @@ async function fillEbayFormAsync(payload) {
   if (Array.isArray(payload?.photos) && payload.photos.length) {
     await uploadPhotos(payload.photos)
   }
-  await clickListItButton()
+  const mode = payload?.listMode === 'manual' ? 'manual' : 'auto'
+  if (mode === 'manual') {
+    const ok = await waitForUserListItClick()
+    if (!ok) throw new Error('Timed out waiting for List It.')
+  } else {
+    await clickListItButton()
+  }
   return true
 }
 

@@ -85,6 +85,7 @@ async function ensureEbayTab(signal) {
 
 async function fillEbayListing(detail, signal) {
   if (!detail || typeof detail !== 'object') return
+  const listMode = detail?.__listMode === 'manual' ? 'manual' : 'auto'
   const tabId = await ensureEbayTab(signal)
   try {
     await chrome.tabs.update(tabId, { active: true })
@@ -127,6 +128,7 @@ async function fillEbayListing(detail, signal) {
     handlingTime: String(detail.handlingTime ?? ''),
     itemLocation: String(detail['Item location'] ?? ''),
     photos,
+    listMode,
   }
 
   try {
@@ -797,6 +799,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
 
       const targetUrl = TARGET_URL
+      const listMode = message?.listMode === 'manual' ? 'manual' : 'auto'
 
       await setState({
         running: true,
@@ -840,6 +843,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             const { finalUrl, detail } = await scrapeProductDetailFromTab(tabId, tabUrl, status, abortController.signal)
             if (typeof finalUrl === 'string' && finalUrl) listingFinalUrl = finalUrl
             if (detail) {
+              detail.__listMode = listMode
               details.push(detail)
             }
           } catch {}
@@ -861,6 +865,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               abortController.signal
             )
             if (detail) {
+              detail.__listMode = listMode
               details.push(detail)
             }
           } catch {}
@@ -874,9 +879,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await updateTabUrl(tabId, tabUrl, abortController.signal)
         } catch {}
 
-        if (details.length) {
+        for (const d of details) {
+          if (abortController.signal.aborted) throw createAbortError()
           try {
-            await fillEbayListing(details[0], abortController.signal)
+            await fillEbayListing(d, abortController.signal)
           } catch {}
         }
 
